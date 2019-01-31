@@ -1,13 +1,19 @@
-.from urllib.request import urlopen as uReq
 from bs4 import BeautifulSoup
 import requests
+import csv
+import pycron
 
-result=requests.get("http://explorer.worldcryptoforumcoin.com/address/WcidA7rARPiczwhajfhuer7VDeywhAZgtt")
+print('Enter address:')
+adrress=input()
+result=requests.get(adrress)
 
-print(result.status_code) 
+while pycron.is_now('*/5 * * * *'):
+    soup = BeautifulSoup(result.text,"html.parser")
 
-src=result.content
-soup = BeautifulSoup(src,"lxml")
+    leaderboard = soup.find_all('table')
+    tbody = leaderboard[1].find('tbody')
 
-tag=soup.find_all("tr",{"role":"row"})
-print(tag)
+    for tr in tbody.find_all("tr"):
+        data =  tr.find_all('td')[0].text.strip()
+        val =  tr.find_all('td')[2].text.strip()
+        print(data,val)
