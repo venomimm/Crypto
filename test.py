@@ -1,7 +1,7 @@
 from bs4 import BeautifulSoup
 import requests
 import csv
-import pycron
+import time
 
 adrress = input('Enter address: ')
 result = requests.get(adrress)
@@ -9,7 +9,8 @@ soup = BeautifulSoup(result.text, "html.parser")
 
 
 def parsData():
-    date1 = ['Data', 'Valoare']
+    date1 = []
+    date1.append(['Data', 'Valoare'])
     leaderboard = soup.find_all('table')
     tbody = leaderboard[1].find('tbody')
 
@@ -21,12 +22,13 @@ def parsData():
 
 
 def write_to_file(output_list, filename):
-    with open(filename, 'w') as csvfile:
+    with open(filename, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         for row in output_list:
             writer.writerow(row)
 
 
-while pycron.is_now('*/5 * * * *'):
+while True:
     write_to_file(parsData(), 'export.csv')
     print(parsData())
+    time.sleep(60)
