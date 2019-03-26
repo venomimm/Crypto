@@ -11,19 +11,21 @@ from bitshares.price import Price, Order, FilledOrder, UpdateCallOrder
 from bitsharesbase.operations import getOperationNameForId
 from bitshares.blockchain import Blockchain, BlockchainInstance
 from win10toast import ToastNotifier
+from collections import OrderedDict
+import math
 import os.path
 import ast
 import threading
 
 
-account = Account("venom88")
+account = Account("venom88", full=True)
 pd.options.display.float_format = '{0:.8f}'.format
 
 
 def actual_tot(cat):
-    '''
-    Needs an Amount instances and
-    returns it's actual value in BTC
+    ''' Transforms Amount in actual BTC value
+        :param an Amount instances
+        :returns it's actual value in BTC
     '''
     total = 0.0
     tot_am = Amount(cat).amount
@@ -71,6 +73,9 @@ def actual_sel(account):
 
 
 def my_orders(account):
+    if not isinstance(account, Account):
+        account = Account(account)
+
     sell_or = []
     buy_or = []
     for it in account.openorders:
@@ -82,27 +87,27 @@ def my_orders(account):
 
 
 def read_history(account):
-    if os.path.isfile(account['name']+'.log'):
+    if os.path.isfile(Account(account)['name']+'.log'):
         hist = []
-        with open(account['name']+'.log') as f:
+        with open(Account(account)['name']+'.log') as f:
             for line in f:
                 hist.append(dict(ast.literal_eval(line)))
     return hist
 
 
 def write_hist(account):
-    if os.path.isfile(account['name']+'.log'):
+    if os.path.isfile(Account(account)['name']+'.log'):
         list_hist = [cat for cat in account.history(
             only_ops=['fill_order', 'transfer', 'asset_issue'])]
         file_hist = read_history(account)
         for cat in list_hist[::-1]:
             if cat not in file_hist:
-                with open(account['name']+'.log', 'r+') as f:
+                with open(Account(account)['name']+'.log', 'r+') as f:
                     content = f.read()
                     f.seek(0, 0)
                     f.write(str(cat) + '\n' + content)
     else:
-        with open(account['name']+'.log', 'w') as f:
+        with open(Account(account)['name']+'.log', 'w') as f:
             for cat in account.history(only_ops=['fill_order', 'transfer', 'asset_issue']):
                 f.write(str(cat)+'\n')
 
@@ -178,18 +183,23 @@ def on_mark(mark_update):
 
 def get_assset_min(parit, account='venom88'):
     if isinstance(parit, str):
-        parit = Market(parit)
+        if 'BRIDGE.BTC' in parit.split(':')[1]:
+            parit = Market(str(Market(parit).get_string().split(
+                ':')[1]+':'+Market(parit).get_string().split(':')[0]))
+        else:
+            parit = Market(parit)
+
+    if isinstance(account, str):
+        account = Account(account)
 
     am_quote = Amount(0, parit['quote']['id'])
     am_base = Amount(0, parit['base']['id'])
 
-    list_tot = []
-
-    if Account(account) == Account('venom88'):
+    if os.path.isfile(Account(account)['name']+'.log'):
         write_hist(account)
         tot = read_history(account)[::-1]
     else:
-        tot = Account(account).history(
+        tot = account.history(
             only_ops=['fill_order', 'transfer', 'asset_issue'])
 
     for cat in tot:
@@ -206,33 +216,82 @@ def get_assset_min(parit, account='venom88'):
                     am_base -= Amount(cat['op'][1]['pays'])
                     am_quote += Amount(cat['op'][1]['receives'])
 
-        if getOperationNameForId(cat['op'][0]) in ['transfer'] and cat['op'][1]['amount']['asset_id'] in str(parit['base']):
-            am_base -= Amount(cat['op'][1]['amount'])
+        # if getOperationNameForId(cat['op'][0]) in ['transfer'] and cat['op'][1]['amount']['asset_id'] in str(parit['base']):
+        #     am_base -= Amount(cat['op'][1]['amount'])
 
-        if getOperationNameForId(cat['op'][0]) in ['asset_issue'] and cat['op'][1]['asset_to_issue']['asset_id'] in str(parit['base']):
-            am_base += Amount(cat['op'][1]['asset_to_issue'])
+        # if getOperationNameForId(cat['op'][0]) in ['asset_issue'] and cat['op'][1]['asset_to_issue']['asset_id'] in str(parit['base']):
+        #     am_base += Amount(cat['op'][1]['asset_to_issue'])
 
-    list_tot.append([am_base, am_quote])
-    return list_tot
-
-
-# for it in avail(account):
-#     for cat in my_orders(account.openorders)[0]:
-#         if cat['base']['asset']['id'] in it['asset']['id']:
-#             print(get_assset_min(Market.get_string(cat)))
+    return [Price(am_base, am_quote), am_base, am_quote]
 
 
-market = Market('BRIDGE.SCH:BRIDGE.BTC')
-ordere = market.orderbook()
+def get_hist(account):
+    hist = []
+    for cat in read_history(account):
+        if cat['op'][0] == 4:
+            hist.append({'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Order ID': cat['op'][1]['order_id'], 'Pays': Amount(cat['op'][1]['pays']['amount'], Asset(cat['op'][1]['pays']['asset_id'])['symbol']), 'Receives': Amount(cat['op'][1]['receives']['amount'], Asset(cat['op'][1]['receives']['asset_id'])['symbol'])})
+        if cat['op'][0] == 0:
+            hist.append({'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Pays': Amount(cat['op'][1]['amount'])})
+        if cat['op'][0] == 14:
+            hist.append({'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Receives': Amount(cat['op'][1]['asset_to_issue'])})
 
-dp_bids = pd.DataFrame({cat['base']['symbol']: cat['base']['amount'], 'Price': "{0:.8f}".format(
-    cat['price']), cat['quote']['symbol']: cat['quote']['amount'], 'User': Account(cat['quote']['asset']['issuer']).name} for cat in ordere['bids'])
-dp_asks = pd.DataFrame({cat['base']['symbol']: cat['base']['amount'], 'Price': "{0:.8f}".format(
-    cat['price']), cat['quote']['symbol']: cat['quote']['amount'], 'User': Account(cat['quote']['asset']['issuer']).name} for cat in ordere['asks'])
+    return pd.DataFrame(hist)[['Transaction ID', 'Transaction type', 'Order ID', 'Pays', 'Receives']]
 
-# for cat in ordere['bids']:
-#     for it in cat.blockchain:
-#         print(cat)
+
+def market_ordere(account, market, limit=100):
+    if isinstance(account, str):
+        account = Account(account)
+    if isinstance(market, str):
+        market = Market(market)
+
+    bids, asks = [], []
+
+    for cat in account.blockchain.rpc.get_limit_orders(market['base']['id'], market['quote']['id'], limit):
+        order = Order(cat['id'])
+        if order['base']['asset']['id'] == market['base']['id']:
+            bids.append(Order(cat['id']))
+        else:
+            asks.append(Order(cat['id']))
+
+    return {"bids": bids, "asks": asks}
+
+
+def mark_order_tot(list_ord=[]):
+    quote_sum = Amount(0, list_ord[0]['quote']['asset']['id'])
+    base_sum = Amount(0, list_ord[0]['base']['asset']['id'])
+    for cat in list_ord:
+        quote_sum += cat['quote']
+        base_sum += cat['base']
+
+    return (quote_sum, base_sum)
+
+
+def truncate(number, decimals):
+    """ Change the decimal point of a number without rounding
+        :param strig: A number to be cut down
+        :param int | decimals: Number of decimals to be left to the float number
+        :return: Price with specified precision
+    """
+    return float(number[:decimals]+'.'+number[6:-1])
+
+
+test = market_ordere('venom88', 'BRIDGE.MONA:BRIDGE.BTC')
+print(mark_order_tot(test['bids']))
+print(mark_order_tot(test['asks']))
+truncate(Asset('BRIDGE.MONA',full=True)['dynamic_asset_data']['current_supply'], Asset('BRIDGE.MONA',full=True)['precision'])
+
+
+list_asks = pd.DataFrame( OrderedDict({'Order ID': cat['id'], 'Price':str(Price(cat['price'],base=cat['quote'],quote=cat['base']))[:18], cat['base']['symbol']:cat['base']['amount'], cat['quote']['symbol']:cat['quote']['amount'], 'Seller':Account(cat['seller'])['name']}) for cat in test['asks'])
+print(list_asks)
+
+# lista_ord = []
+# for cat in account.openorders:
+#     if cat.market not in lista_ord:
+#         lista_ord.append(cat.market)
+#         print(get_assset_min(cat.market))
 
 notify = Notify(
     markets=list(dict.fromkeys([Market.get_string(cat)
