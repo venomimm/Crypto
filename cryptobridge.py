@@ -1,4 +1,3 @@
-from pprint import pprint
 from itertools import repeat
 import pandas as pd
 from bitshares import BitShares
