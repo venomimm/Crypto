@@ -7,35 +7,45 @@ from bitshares.market import Market
 from bitshares.price import Price, Order, FilledOrder, UpdateCallOrder
 from bitsharesbase.operations import getOperationNameForId
 from bitshares.blockchain import Blockchain, BlockchainInstance
-from win10toast import ToastNotifier
 from collections import OrderedDict
 from datetime import datetime
+from sklearn import preprocessing
+from sklearn.datasets.samples_generator import make_blobs
+from sklearn.cluster import MeanShift
+from multiprocessing import Process, Queue
+from flask_socketio import SocketIO, emit
+from collections.abc import Iterable
 import copy
 import math
 import os.path
 import ast
 import threading
 import multiprocessing
-from multiprocessing import Process, Queue
 import pandas as pd
+import numpy as np
 import queue
 import re
 
-
 class Account_Data(threading.Thread):    
 
+
     def __init__(self, account):
+        super(Account_Data, self).__init__()
+        pd.options.display.float_format = '{:,.8f}'.format
         self.order_data=pd
         self.account = Account(account, full=True)
         self.notify = None
-        self.markets= [] #dict.fromkeys([Market.get_string(cat) for cat in self.account.openorders])
+        self.markets= [] 
+        self.log = []
 
 
     def get_order(self):
         return self.order_data
 
+
     def set_order(self, date):      
         self.order_data=date
+
 
     def update_notify(self):   
         if self.notify:
@@ -45,9 +55,9 @@ class Account_Data(threading.Thread):
             # Initialize the notification instance
             self.notify = Notify(
                 markets=list(self.markets),
-                accounts=list(self.account),
+                accounts=[self.account.name],
                 on_market=self.on_mark,
-                on_account=self.on_acco
+                on_account=self.on_account
                 # on_block=self.on_block,
                 # bitshares_instance=self.bitshares
             ) 
@@ -120,6 +130,18 @@ class Account_Data(threading.Thread):
                 buy_or.append(it)
         return {'sell': sell_or, 'buy': buy_or}
 
+    @staticmethod
+    def open_orders_display (data):
+        lista=[]
+        if isinstance(data, Iterable):
+            for i in data:
+                lista.append(OrderedDict({'ID':i['id'],'Buy':i['quote']['symbol'], 'Sell':i['base']['symbol'], 'Price':Price(i['base'],i['quote'])['price']}))
+                        
+        if isinstance(data, Order):
+            pass
+
+        return lista
+
     def read_history(self):
         if os.path.isfile(self.account.name+'.log'):
             hist = []
@@ -144,7 +166,7 @@ class Account_Data(threading.Thread):
                 for cat in self.account.history(only_ops=['fill_order', 'transfer', 'asset_issue']):
                     f.write(str(cat)+'\n')
 
-    def on_acco(self, account_update):
+    def on_account(self, account_update):
         config_lock = threading.RLock()
         config_lock.acquire()
         account = account_update.account
@@ -152,14 +174,9 @@ class Account_Data(threading.Thread):
             id_tranz = account.blockchain.rpc.get_object(account.blockchain.rpc.get_object(
                 account_update['most_recent_op'])['operation_id'])
 
-            if getOperationNameForId(id_tranz['op'][0]) in ['fill_order', 'transfer', 'asset_issue']:
-                toaster = ToastNotifier()
-                toaster.show_toast(getOperationNameForId(id_tranz['op'][0]).replace('_', ' ').title(),
-                                   print(account_update),
-                                   icon_path="bitshares.ico",
-                                   duration=10)
             self.write_hist()
             print(id_tranz)
+            self.log.append(id_tranz)
 
         config_lock.release()
 
@@ -195,12 +212,8 @@ class Account_Data(threading.Thread):
         tot['total'] = tot['available BTC'] + \
             tot['orders']
 
-        tot.loc['Suma', 'total'] = tot['total'].sum()
-        tot.loc['Suma', 'total btc'] = tot['total btc'].sum()
-
         tot = tot[['symbol', 'amount', 'total btc',
                    'available BTC', 'orders', 'total']][tot.total > val]
-        pd.options.display.float_format = '{0:.8f}'.format
 
         return tot.sort_values('total', ascending=False)
 
@@ -250,7 +263,7 @@ class Account_Data(threading.Thread):
                 only_ops=['fill_order', 'transfer', 'asset_issue'])
 
         for cat in tot:
-            if am_base < 0:
+            if am_base < 0.1:
                 am_quote = Amount(0, parit['quote']['id'])
                 am_base = Amount(0, parit['base']['id'])
 
@@ -270,21 +283,6 @@ class Account_Data(threading.Thread):
             #     am_base += Amount(cat['op'][1]['asset_to_issue'])
 
         return [Price(quote=am_base, base=am_quote), am_base, am_quote]
-
-    def get_hist(self):
-        hist = []
-        for cat in self.read_history():
-            if cat['op'][0] == 4:
-                hist.append({'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
-                    cat['op'][0]), 'Order ID': cat['op'][1]['order_id'], 'Pays': Amount(cat['op'][1]['pays']['amount'], Asset(cat['op'][1]['pays']['asset_id'])['symbol']), 'Receives': Amount(cat['op'][1]['receives']['amount'], Asset(cat['op'][1]['receives']['asset_id'])['symbol'])})
-            if cat['op'][0] == 0:
-                hist.append({'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
-                    cat['op'][0]), 'Pays': Amount(cat['op'][1]['amount'])})
-            if cat['op'][0] == 14:
-                hist.append({'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
-                    cat['op'][0]), 'Receives': Amount(cat['op'][1]['asset_to_issue'])})
-
-        return pd.DataFrame(hist)[['Transaction ID', 'Transaction type', 'Order ID', 'Pays', 'Receives']]
 
     def market_ordere(self, market, limit=300):
         if isinstance(market, str):
@@ -307,6 +305,49 @@ class Account_Data(threading.Thread):
                     order_book.append({'ID':order['id'], 'Side':'Buy','Price': order['price'], order['base']['symbol']:order['base']['amount'], order['quote']['symbol']:order['quote']['amount'], 'Seller':Account(order['seller']).name})
 
         return order_book
+
+    @staticmethod
+    def get_hist(cat):
+        hist = OrderedDict()
+        if cat['op'][0] == 1:
+            hist={'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Sell': Amount(cat['op'][1]['amount_to_sell']), 'Buy': Amount(cat['op'][1]['min_to_receive'])}
+        if cat['op'][0] == 2:
+            hist={'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Amount': Amount(cat['result'][1])}
+        if cat['op'][0] == 4:
+            hist={'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Order ID': cat['op'][1]['order_id'], 'Pays': Amount(cat['op'][1]['pays']['amount'], Asset(cat['op'][1]['pays']['asset_id'])['symbol']), 'Receives': Amount(cat['op'][1]['receives']['amount'], Asset(cat['op'][1]['receives']['asset_id'])['symbol'])}
+        if cat['op'][0] == 0:
+            hist={'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Pays': Amount(cat['op'][1]['amount'])}
+        if cat['op'][0] == 14:
+            hist={'Transaction ID': cat['id'], 'Transaction type': getOperationNameForId(
+                cat['op'][0]), 'Receives': Amount(cat['op'][1]['asset_to_issue'])}
+
+        return hist
+
+    @staticmethod
+    def market_set (mark):
+        markets=["BRIDGE.BTC","BRIDGE.USDT","BRIDGE.ETH","BRIDGE.LTC","BRIDGE.RVN","BTS"]
+
+        if isinstance(mark, str):
+            if len(re.split(':|/', mark))==1:
+                if mark==markets[0]:
+                    market=mark+"/"+markets[1]
+                else:
+                    market=mark+"/"+markets[0]
+                
+            if len(re.split(':|/', mark))==2:
+                for mrk in markets:
+                    if mrk in mark:
+                        temp=re.split(':|/', mark)
+                        temp.remove(mrk)
+                        market=temp[0]+"/"+mrk
+                        break
+            
+        print(market)
+        return market
 
     @staticmethod
     def get_updated_limit_order(limit_order):
@@ -334,52 +375,35 @@ class Account_Data(threading.Thread):
         return float(number[:decimals]+'.'+number[decimals:-1])
 
     def get_market_data(self, mark):
-        pd.options.display.float_format = '{:,.8f}'.format
         date = self.market_ordere(mark)
         order_book = pd.DataFrame(date).set_index(['Side','ID'])
         order_book.sort_values(by=['Price'], inplace=True)
 
         return self.set_order(order_book)
 
-    def process_pd (self, panda):
-
-        # sell = panda.loc['Sell']
-        # buy = panda.loc['Buy']
-        # buy=buy.sort_values(by=['Price'], ascending=False)
+    def process_pd (self, panda):  
+        # panda=panda[panda.Seller !=self.account.name]      
+        sell = panda.loc['Sell']
+        buy = panda.loc['Buy']
+        buy=buy.sort_values(by=['Price'], ascending=False)
         
-        # sell=sell.assign(Total=pd.Series(sell['BRIDGE.BTC'].rolling(window=sell['BRIDGE.BTC'].count(), min_periods=1).sum()))
-        # buy=buy.assign(Total=pd.Series(buy['BRIDGE.BTC'].rolling(window=buy['BRIDGE.BTC'].count(), min_periods=1).sum()))
-        panda=panda.assign(Total=pd.Series(panda['BRIDGE.BTC'].rolling(window=panda['BRIDGE.BTC'].count(), min_periods=1).sum()))
-        panda=panda.assign(Place=panda.loc[:,['BRIDGE.BTC']].apply(lambda x: x > panda['BRIDGE.BTC'].std()))    
-        # sell=sell.assign(Place=sell.loc[:,['BRIDGE.BTC']].apply(lambda x: x > sell['BRIDGE.BTC'].std()))
-        # buy=buy.assign(Place=buy.loc[:,['BRIDGE.BTC']].apply(lambda x: x > buy['BRIDGE.BTC'].std()))
+        sell=sell.assign(Total=pd.Series(sell[buy.columns[0]].rolling(window=sell[buy.columns[0]].count(), min_periods=1).sum()))
+        buy=buy.assign(Total=pd.Series(buy[buy.columns[0]].rolling(window=buy[buy.columns[0]].count(), min_periods=1).sum()))      
 
-        # sell['Percent Tot']=sell.loc[:,['BRIDGE.BTC']].apply(lambda x: x / x.sum())
-        # buy['Percent Tot']=buy.loc[:,['BRIDGE.BTC']].apply(lambda x: x / x.sum())
-        # sell['Percent Price']=sell.loc[:,['Price']].apply(lambda x: (x.shift(-1)-x)/x)
-        # buy['Percent Price']=buy.loc[:,['Price']].apply(lambda x: (x.shift(-1)-x)/x)
+        #print(buy)
+        #clustering_buy = MeanShift().fit(np.column_stack([buy.Price.array, buy.Total.array]))
+        #buy=buy.groupby(clustering_buy.labels_).agg({buy.columns[0]: 'sum', buy.columns[1]: 'sum', 'Price': 'max'})
+        #buy=buy.sort_values(by=['Price'], ascending=False)
+        #print(buy)
+        #print(buy.iloc[1:2, 2])
+        
+        #print(sell)
+        #clustering_sell = MeanShift(bandwidth=sell.iloc[:,0].median()).fit(np.column_stack([sell.Price.array, sell.Total.array]))
+        #sell=sell.groupby(clustering_sell.labels_).agg({sell.columns[0]: 'sum', sell.columns[1]: 'sum', 'Price': 'min'})
+        #sell=sell.sort_values(by=['Price'], ascending=True)
+        #print(sell)
+        #print(sell.iloc[1:2, 2])
 
-        # print(buy)
-        # print(sell)
-        print(panda)
+        return [buy, sell]
+        
 
-start_time = datetime.now()
-
-accont = Account_Data('venom88')
-accont.markets=['BRIDGE.MOBI/BRIDGE.BTC']
-accont.get_market_data(accont.markets[0])
-accont.process_pd(accont.get_order())
-accont.get_assset_min('BRIDGE.PRJ/BRIDGE.BTC', 'venom88')
-
-accont.run()
-
-
-# # for i in range(5):
-# #     order = accont.market_ordere(markk)['bids'][i].invert()
-# #     sel = order['seller']
-# #     print(Account(sel).name)
-# #     print(accont.get_assset_min(markk, sel))
-# print(accont.get_assset_min(markk, 'venom88'))
-
-time_elapsed = datetime.now() - start_time
-print('Time elapsed (hh:mm:ss.ms) {}'.format(time_elapsed))
